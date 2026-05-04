@@ -1,0 +1,11 @@
+Flask
+Flask-SQLAlchemy
+Flask-Migrate
+python-dotenv
+openai
+pydantic
+pytest
+pytest-mock
+flask-limiter
+requests
+psycopg2-binary
