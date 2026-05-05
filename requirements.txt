@@ -9,3 +9,5 @@ pytest-mock
 flask-limiter
 requests
 psycopg2-binary
+celery[redis]
+redis
