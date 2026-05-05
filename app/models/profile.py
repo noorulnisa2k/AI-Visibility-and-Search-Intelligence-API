@@ -34,6 +34,9 @@ class BusinessProfile(db.Model):
         }
 
     def summary_stats(self):
+        from app.models.query import DiscoveredQuery
+        from app.models.recommendation import ContentRecommendation
+
         total_queries = db.session.query(db.func.count(DiscoveredQuery.id)).filter_by(profile_uuid=self.id).scalar() or 0
         avg_score = db.session.query(db.func.avg(DiscoveredQuery.opportunity_score)).filter_by(profile_uuid=self.id).scalar() or 0
         total_recommendations = db.session.query(db.func.count(ContentRecommendation.id)).filter_by(profile_uuid=self.id).scalar() or 0
