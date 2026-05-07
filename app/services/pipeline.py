@@ -10,8 +10,9 @@ from app.agents.recommendation import ContentRecommendationAgent
 from app.models.profile import BusinessProfile, PipelineRun
 from app.models.query import DiscoveredQuery
 from app.models.recommendation import ContentRecommendation
+from app.logging_config import get_active_logger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.pipeline")
 
 
 class PipelineOrchestrator:
@@ -21,9 +22,14 @@ class PipelineOrchestrator:
         self.dataforseo_pass = dataforseo_pass
 
     def run(self, profile_uuid: str) -> dict[str, Any]:
+        call_logger = get_active_logger("pipeline")
+        call_logger.info(f"PIPELINE START | profile_uuid={profile_uuid}")
+
         profile = BusinessProfile.query.get(profile_uuid)
         if not profile:
             raise ValueError(f"Profile {profile_uuid} not found")
+
+        call_logger.info(f"PROFILE LOADED | name={profile.name} domain={profile.domain} industry={profile.industry}")
 
         run = PipelineRun(
             profile_uuid=profile_uuid,
@@ -31,6 +37,7 @@ class PipelineOrchestrator:
         )
         db.session.add(run)
         db.session.commit()
+        call_logger.info(f"DB SAVE | PipelineRun created | run_uuid={run.id} | status=running")
 
         correlation_id = str(uuid.uuid4())[:8]
         logger.info(f"[{correlation_id}] Pipeline started for profile {profile_uuid}, run {run.id}")
@@ -47,6 +54,8 @@ class PipelineOrchestrator:
             run.completed_at = datetime.now(timezone.utc)
             db.session.commit()
 
+            call_logger.info(f"DB UPDATE | PipelineRun completed | run_uuid={run.id} | discovered={run.queries_discovered} | scored={run.queries_scored} | tokens={run.tokens_used}")
+
             top_queries = sorted(
                 [q for q in scored_queries if "error" not in q],
                 key=lambda x: x["opportunity_score"],
@@ -54,6 +63,7 @@ class PipelineOrchestrator:
             )[:3]
 
             logger.info(f"[{correlation_id}] Pipeline completed: {run.queries_discovered} queries, {run.queries_scored} scored, {len(recommendations)} recommendations")
+            call_logger.info(f"PIPELINE COMPLETE | discovered={run.queries_discovered} scored={run.queries_scored} recommendations={len(recommendations)}")
 
             return {
                 "pipeline_uuid": run.id,
@@ -69,17 +79,24 @@ class PipelineOrchestrator:
 
         except Exception as e:
             logger.error(f"[{correlation_id}] Pipeline failed: {e}", exc_info=True)
+            call_logger.error(f"PIPELINE FAILED | error={e}")
             run.status = "failed"
             run.error_message = str(e)
             run.completed_at = datetime.now(timezone.utc)
             run.tokens_used = self._collect_tokens()
             db.session.commit()
+            call_logger.info(f"DB UPDATE | PipelineRun failed | run_uuid={run.id} | error={e}")
             raise
 
     def recheck_query(self, query_uuid: str) -> dict[str, Any]:
+        call_logger = get_active_logger("pipeline")
+        call_logger.info(f"RECHECK START | query_uuid={query_uuid}")
+
         query = DiscoveredQuery.query.get(query_uuid)
         if not query:
             raise ValueError(f"Query {query_uuid} not found")
+
+        call_logger.info(f"QUERY LOADED | text={query.query_text} | current_score={query.opportunity_score}")
 
         agent = VisibilityScoringAgent(
             api_key=self.api_key,
@@ -95,12 +112,19 @@ class PipelineOrchestrator:
         self._merge_tokens(agent)
 
         result = results[0]
+        old_score = query.opportunity_score
         query.estimated_search_volume = result["estimated_search_volume"]
         query.competitive_difficulty = result["competitive_difficulty"]
         query.opportunity_score = result["opportunity_score"]
         query.domain_visible = result["domain_visible"]
         query.visibility_position = result.get("visibility_position")
         db.session.commit()
+
+        call_logger.info(
+            f"DB UPDATE | Query rechecked | query_uuid={query_uuid} | "
+            f"score {old_score:.4f} -> {query.opportunity_score:.4f} | visible={query.domain_visible}"
+        )
+        call_logger.info(f"RECHECK COMPLETE | query_uuid={query_uuid}")
 
         return {
             "query_uuid": query.id,
@@ -113,7 +137,10 @@ class PipelineOrchestrator:
         }
 
     def _run_agent_1(self, profile: BusinessProfile, run: PipelineRun) -> list[str]:
+        call_logger = get_active_logger("pipeline")
         logger.info(f"Agent 1: Query Discovery for {profile.domain}")
+        call_logger.info(f"AGENT 1 LAUNCH | QueryDiscoveryAgent | profile={profile.domain}")
+
         agent = QueryDiscoveryAgent(api_key=self.api_key)
         profile_data = {
             "name": profile.name,
@@ -125,18 +152,24 @@ class PipelineOrchestrator:
         queries = agent.run(profile=profile_data)
         self._merge_tokens(agent)
 
-        for query_text in queries:
+        for i, query_text in enumerate(queries, 1):
             dq = DiscoveredQuery(
                 profile_uuid=profile.id,
                 run_uuid=run.id,
                 query_text=query_text,
             )
             db.session.add(dq)
+            call_logger.debug(f"DB ADD | DiscoveredQuery {i}/{len(queries)} | text={query_text}")
+
         db.session.commit()
+        call_logger.info(f"DB COMMIT | {len(queries)} DiscoveredQuery records saved | run_uuid={run.id}")
         return queries
 
     def _run_agent_2(self, profile: BusinessProfile, run: PipelineRun, queries: list[str]) -> list[dict[str, Any]]:
+        call_logger = get_active_logger("pipeline")
         logger.info(f"Agent 2: Visibility Scoring for {profile.domain} ({len(queries)} queries)")
+        call_logger.info(f"AGENT 2 LAUNCH | VisibilityScoringAgent | domain={profile.domain} | queries={len(queries)}")
+
         agent = VisibilityScoringAgent(
             api_key=self.api_key,
             dataforseo_user=self.dataforseo_user,
@@ -149,7 +182,7 @@ class PipelineOrchestrator:
         )
         self._merge_tokens(agent)
 
-        for result in results:
+        for i, result in enumerate(results, 1):
             dq = DiscoveredQuery.query.filter_by(run_uuid=run.id, query_text=result["query_text"]).first()
             if dq:
                 dq.estimated_search_volume = result["estimated_search_volume"]
@@ -157,18 +190,28 @@ class PipelineOrchestrator:
                 dq.opportunity_score = result["opportunity_score"]
                 dq.domain_visible = result["domain_visible"]
                 dq.visibility_position = result.get("visibility_position")
+                call_logger.debug(
+                    f"DB UPDATE | DiscoveredQuery {i}/{len(results)} | text={result['query_text']} | "
+                    f"score={result['opportunity_score']:.4f} visible={result['domain_visible']}"
+                )
         db.session.commit()
+        call_logger.info(f"DB COMMIT | {len(results)} DiscoveredQuery scores updated")
 
         return results
 
     def _run_agent_3(self, profile: BusinessProfile, run: PipelineRun, scored_queries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        call_logger = get_active_logger("pipeline")
         logger.info(f"Agent 3: Content Recommendations for {profile.domain}")
+
         invisible = [q for q in scored_queries if not q.get("domain_visible", False) and "error" not in q]
         invisible_sorted = sorted(invisible, key=lambda x: x["opportunity_score"], reverse=True)
 
         if not invisible_sorted:
             logger.info("No invisible queries found, skipping Agent 3")
+            call_logger.info("AGENT 3 SKIPPED | no invisible queries found")
             return []
+
+        call_logger.info(f"AGENT 3 LAUNCH | ContentRecommendationAgent | invisible_queries={len(invisible_sorted)}")
 
         agent = ContentRecommendationAgent(api_key=self.api_key)
         profile_data = {
@@ -179,7 +222,7 @@ class PipelineOrchestrator:
         recommendations = agent.run(profile=profile_data, invisible_queries=invisible_sorted)
         self._merge_tokens(agent)
 
-        for rec in recommendations:
+        for i, rec in enumerate(recommendations, 1):
             target_query = DiscoveredQuery.query.filter_by(
                 profile_uuid=profile.id,
                 query_text=rec.get("target_query", ""),
@@ -195,7 +238,13 @@ class PipelineOrchestrator:
                 priority=rec["priority"],
             )
             db.session.add(cr)
+            call_logger.info(
+                f"DB ADD | ContentRecommendation {i}/{len(recommendations)} | type={rec['content_type']} | "
+                f"priority={rec['priority']} | title={rec['title']}"
+            )
+
         db.session.commit()
+        call_logger.info(f"DB COMMIT | {len(recommendations)} ContentRecommendation records saved | profile_uuid={profile.id}")
 
         return recommendations
 

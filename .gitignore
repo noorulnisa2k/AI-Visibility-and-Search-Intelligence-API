@@ -1,2 +1,9 @@
 .venv
 .env
+logs/
+instance/
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+pipeline_run.json

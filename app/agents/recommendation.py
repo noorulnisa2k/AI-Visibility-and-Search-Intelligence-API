@@ -2,8 +2,9 @@ import logging
 from typing import Any, Optional
 
 from app.agents.base import BaseAgent
+from app.logging_config import get_active_logger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.agents.recommendation")
 
 SYSTEM_PROMPT = """You are a Content Recommendation Agent specializing in identifying content gaps and generating actionable recommendations for improving AI visibility.
 
@@ -60,6 +61,8 @@ class ContentRecommendationAgent(BaseAgent):
         profile: dict[str, Any],
         invisible_queries: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        call_logger = get_active_logger("recommendation")
+
         queries_text = ""
         for i, q in enumerate(invisible_queries, 1):
             queries_text += (
@@ -76,7 +79,12 @@ class ContentRecommendationAgent(BaseAgent):
             queries_json=queries_text,
         )
 
+        call_logger.info(f"AGENT 3 START | Recommendations | profile={profile.get('name')} | invisible_queries={len(invisible_queries)}")
+        call_logger.debug(f"AGENT 3 INPUT | user_prompt={user_prompt}")
+
         raw = self._call_llm(self.system_prompt(), user_prompt)
+        call_logger.debug(f"AGENT 3 RAW LLM OUTPUT | {raw[:500]}")
+
         parsed = self._parse_json(raw)
 
         if not isinstance(parsed, dict) or "recommendations" not in parsed:
@@ -99,6 +107,13 @@ class ContentRecommendationAgent(BaseAgent):
                 rec["priority"] = "medium"
             if not isinstance(rec.get("target_keywords"), list):
                 rec["target_keywords"] = []
+
+        call_logger.info(f"AGENT 3 COMPLETE | recommendations={len(recommendations)} | tokens_used={self.total_tokens}")
+        for i, rec in enumerate(recommendations, 1):
+            call_logger.info(
+                f"AGENT 3 REC {i} | type={rec['content_type']} | priority={rec['priority']} | title={rec['title']}"
+            )
+            call_logger.debug(f"AGENT 3 REC {i} | target_query={rec.get('target_query')} | keywords={rec.get('target_keywords')}")
 
         logger.info(f"ContentRecommendationAgent returned {len(recommendations)} recommendations")
         return recommendations

@@ -6,6 +6,8 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 
+from app.logging_config import setup_root_logger
+
 db = SQLAlchemy()
 migrate = Migrate()
 limiter = Limiter(key_func=get_remote_address)
@@ -29,6 +31,11 @@ def create_app(config_override=None):
     db.init_app(application)
     migrate.init_app(application, db)
     limiter.init_app(application)
+
+    setup_root_logger()
+
+    from app.middleware import register_request_logging
+    register_request_logging(application)
 
     import app.models  # noqa: F401 - register models with SQLAlchemy
 

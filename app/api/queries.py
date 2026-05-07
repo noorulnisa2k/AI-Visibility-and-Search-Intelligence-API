@@ -1,5 +1,5 @@
 import os
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -8,6 +8,7 @@ from app.models.profile import BusinessProfile, PipelineRun
 from app.models.query import DiscoveredQuery
 from app.models.recommendation import ContentRecommendation
 from app.services.pipeline import PipelineOrchestrator
+from app.logging_config import get_active_logger
 
 queries_bp = Blueprint("queries", __name__)
 limiter = Limiter(key_func=get_remote_address)
@@ -16,15 +17,19 @@ limiter = Limiter(key_func=get_remote_address)
 @queries_bp.route("/profiles/<profile_uuid>/run", methods=["POST"])
 @limiter.limit("5 per minute")
 def run_pipeline(profile_uuid):
+    call_logger = get_active_logger("pipeline")
     profile = db.session.get(BusinessProfile, profile_uuid)
     if not profile:
+        call_logger.warning(f"RUN PIPELINE NOT FOUND | profile_uuid={profile_uuid}")
         return jsonify({"error": "Not found", "message": f"Profile {profile_uuid} not found"}), 404
 
     async_mode = request.args.get("async", "false").lower() == "true"
+    call_logger.info(f"RUN PIPELINE | profile={profile.name} domain={profile.domain} async={async_mode}")
 
     if async_mode and _celery_available():
         from app.tasks import run_pipeline_task
         task = run_pipeline_task.delay(profile_uuid)
+        call_logger.info(f"PIPELINE QUEUED | task_id={task.id}")
         return jsonify({
             "task_id": task.id,
             "status": "pending",
@@ -35,14 +40,21 @@ def run_pipeline(profile_uuid):
     orchestrator = PipelineOrchestrator()
     try:
         result = orchestrator.run(profile_uuid)
+        call_logger.info(
+            f"PIPELINE RESPONSE | discovered={result['queries_discovered']} "
+            f"scored={result['queries_scored']} recommendations={len(result['recommendations'])}"
+        )
         return jsonify(result), 200
     except Exception as e:
+        call_logger.error(f"PIPELINE FAILED | error={e}")
         return jsonify({"error": "Pipeline failed", "message": str(e)}), 500
 
 
 @queries_bp.route("/tasks/<task_id>/status", methods=["GET"])
 def get_task_status(task_id):
+    call_logger = get_active_logger("pipeline")
     if not _celery_available():
+        call_logger.warning("TASK STATUS | Celery not configured")
         return jsonify({"error": "Not available", "message": "Celery is not configured"}), 503
 
     from app.tasks import run_pipeline_task
@@ -52,6 +64,7 @@ def get_task_status(task_id):
         "task_id": task_id,
         "status": result.status,
     }
+    call_logger.info(f"TASK STATUS | task_id={task_id} | status={result.status}")
 
     if result.status == "SUCCESS" and result.result:
         response.update(result.result)
@@ -63,8 +76,10 @@ def get_task_status(task_id):
 
 @queries_bp.route("/profiles/<profile_uuid>/queries", methods=["GET"])
 def get_queries(profile_uuid):
+    call_logger = get_active_logger("pipeline")
     profile = db.session.get(BusinessProfile, profile_uuid)
     if not profile:
+        call_logger.warning(f"GET QUERIES NOT FOUND | profile_uuid={profile_uuid}")
         return jsonify({"error": "Not found", "message": f"Profile {profile_uuid} not found"}), 404
 
     page = request.args.get("page", 1, type=int)
@@ -88,6 +103,11 @@ def get_queries(profile_uuid):
 
     pagination = query_obj.paginate(page=page, per_page=per_page, error_out=False)
 
+    call_logger.info(
+        f"GET QUERIES | profile={profile.name} | page={page} per_page={per_page} "
+        f"min_score={min_score} status={status_filter} | returned={len(pagination.items)} total={pagination.total}"
+    )
+
     return jsonify({
         "queries": [q.to_dict() for q in pagination.items],
         "pagination": {
@@ -101,11 +121,19 @@ def get_queries(profile_uuid):
 
 @queries_bp.route("/profiles/<profile_uuid>/recommendations", methods=["GET"])
 def get_recommendations(profile_uuid):
+    call_logger = get_active_logger("pipeline")
     profile = db.session.get(BusinessProfile, profile_uuid)
     if not profile:
+        call_logger.warning(f"GET RECOMMENDATIONS NOT FOUND | profile_uuid={profile_uuid}")
         return jsonify({"error": "Not found", "message": f"Profile {profile_uuid} not found"}), 404
 
     recommendations = db.session.query(ContentRecommendation).filter_by(profile_uuid=profile_uuid).all()
+
+    call_logger.info(f"GET RECOMMENDATIONS | profile={profile.name} | total={len(recommendations)}")
+    for i, r in enumerate(recommendations, 1):
+        call_logger.debug(
+            f"RECOMMENDATION {i} | type={r.content_type} priority={r.priority} title={r.title}"
+        )
 
     return jsonify({
         "recommendations": [r.to_dict() for r in recommendations],
@@ -115,13 +143,22 @@ def get_recommendations(profile_uuid):
 
 @queries_bp.route("/queries/<query_uuid>/recheck", methods=["POST"])
 def recheck_query(query_uuid):
+    call_logger = get_active_logger("pipeline")
+    call_logger.info(f"RECHECK REQUEST | query_uuid={query_uuid}")
+
     orchestrator = PipelineOrchestrator()
     try:
         result = orchestrator.recheck_query(query_uuid)
+        call_logger.info(
+            f"RECHECK RESPONSE | query={result['query_text']} | "
+            f"score={result['opportunity_score']:.4f} visible={result['domain_visible']}"
+        )
         return jsonify(result), 200
     except ValueError as e:
+        call_logger.warning(f"RECHECK NOT FOUND | query_uuid={query_uuid} | error={e}")
         return jsonify({"error": "Not found", "message": str(e)}), 404
     except Exception as e:
+        call_logger.error(f"RECHECK FAILED | query_uuid={query_uuid} | error={e}")
         return jsonify({"error": "Recheck failed", "message": str(e)}), 500
 
 

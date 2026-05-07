@@ -6,8 +6,9 @@ from typing import Any, Optional
 
 from app.agents.base import BaseAgent
 from app.utils.scoring import calculate_opportunity_score
+from app.logging_config import get_active_logger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.agents.scoring")
 
 SYSTEM_PROMPT = """You are a Visibility Scoring Agent specializing in analyzing search queries for AI visibility opportunities.
 
@@ -85,11 +86,20 @@ Analyze this query and return the scoring JSON."""
         return parsed
 
     def run(self, queries: list[str], target_domain: str, competitors: list[str]) -> list[dict[str, Any]]:
+        call_logger = get_active_logger("scoring")
+        call_logger.info(f"AGENT 2 START | Scoring | queries={len(queries)} | domain={target_domain}")
+
         results = []
-        for query_text in queries:
+        for i, query_text in enumerate(queries, 1):
             try:
+                call_logger.debug(f"AGENT 2 SCORING {i}/{len(queries)} | {query_text}")
+
                 volume = self._fetch_dataforseo_volume(query_text)
+                if volume:
+                    call_logger.debug(f"AGENT 2 DATAFORSEO | query={query_text} | volume={volume}")
+
                 ai_result = self._score_query(query_text, target_domain, competitors)
+                call_logger.debug(f"AGENT 2 LLM RAW | {ai_result}")
 
                 estimated_volume = volume or ai_result.get("estimated_search_volume", 0)
                 difficulty = ai_result.get("competitive_difficulty", 50)
@@ -111,17 +121,24 @@ Analyze this query and return the scoring JSON."""
                     query_text=query_text,
                 )
 
-                results.append({
+                score_entry = {
                     "query_text": query_text,
                     "estimated_search_volume": estimated_volume,
                     "competitive_difficulty": difficulty,
                     "opportunity_score": opp_score,
                     "domain_visible": domain_visible,
                     "visibility_position": visibility_position,
-                })
-                logger.info(f"Scored '{query_text}': vol={estimated_volume}, diff={difficulty}, visible={domain_visible}, opp={opp_score}")
+                }
+                results.append(score_entry)
+
+                call_logger.info(
+                    f"AGENT 2 SCORED {i}/{len(queries)} | {query_text} | "
+                    f"vol={estimated_volume} diff={difficulty} visible={domain_visible} score={opp_score:.4f}"
+                )
+
             except Exception as e:
                 logger.error(f"Failed to score query '{query_text}': {e}")
+                call_logger.error(f"AGENT 2 ERROR | query={query_text} | error={e}")
                 results.append({
                     "query_text": query_text,
                     "estimated_search_volume": 0,
@@ -131,4 +148,8 @@ Analyze this query and return the scoring JSON."""
                     "visibility_position": None,
                     "error": str(e),
                 })
+
+        call_logger.info(
+            f"AGENT 2 COMPLETE | scored={len(results)}/{len(queries)} | tokens_used={self.total_tokens}"
+        )
         return results

@@ -3,8 +3,9 @@ import logging
 from typing import Any, Optional
 
 from app.agents.base import BaseAgent
+from app.logging_config import get_active_logger
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("app.agents.discovery")
 
 SYSTEM_PROMPT = """You are a Query Discovery Agent specializing in identifying commercially relevant questions that users ask AI assistants (ChatGPT, Claude, Perplexity, etc.) when searching for products or services.
 
@@ -50,6 +51,8 @@ class QueryDiscoveryAgent(BaseAgent):
         return SYSTEM_PROMPT
 
     def run(self, profile: dict[str, Any]) -> list[str]:
+        call_logger = get_active_logger("discovery")
+
         competitors_str = ", ".join(profile.get("competitors", []))
         user_prompt = USER_PROMPT_TEMPLATE.format(
             name=profile.get("name", ""),
@@ -59,7 +62,12 @@ class QueryDiscoveryAgent(BaseAgent):
             competitors=competitors_str,
         )
 
+        call_logger.info(f"AGENT 1 START | Discovery | profile={profile.get('name')} ({profile.get('domain')})")
+        call_logger.debug(f"AGENT 1 INPUT | user_prompt={user_prompt}")
+
         raw = self._call_llm(self.system_prompt(), user_prompt)
+        call_logger.debug(f"AGENT 1 RAW LLM OUTPUT | {raw[:500]}")
+
         parsed = self._parse_json(raw)
 
         if not isinstance(parsed, dict) or "queries" not in parsed:
@@ -73,6 +81,10 @@ class QueryDiscoveryAgent(BaseAgent):
 
         if len(queries) > 20:
             queries = queries[:20]
+
+        call_logger.info(f"AGENT 1 COMPLETE | discovered={len(queries)} queries | tokens_used={self.total_tokens}")
+        for i, q in enumerate(queries, 1):
+            call_logger.debug(f"AGENT 1 QUERY {i} | {q}")
 
         logger.info(f"QueryDiscoveryAgent returned {len(queries)} queries")
         return queries
