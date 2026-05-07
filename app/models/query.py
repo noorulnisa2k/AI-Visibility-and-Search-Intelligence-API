@@ -17,7 +17,7 @@ class DiscoveredQuery(db.Model):
     visibility_position = db.Column(db.Integer, nullable=True)
     discovered_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
-    recommendations = db.relationship("ContentRecommendation", backref="query", lazy=True, cascade="all, delete-orphan")
+    recommendations = db.relationship("ContentRecommendation", backref="target_query", lazy=True, cascade="all, delete-orphan")
 
     @property
     def visibility_status(self):

@@ -16,7 +16,7 @@ Your task: For each query, provide realistic estimates of search volume, competi
 Scoring guidelines:
 - estimated_search_volume: Monthly search volume (integer). Be realistic based on query specificity. Broad queries: 1000-5000. Niche queries: 100-800. Long-tail: 50-300.
 - competitive_difficulty: Integer 0-100. Higher means harder to rank/appear. Consider: number of established players, query maturity, content saturation.
-- domain_visible: Boolean. Would the target domain likely appear in top AI-generated answers for this query? Consider domain authority in this space, brand recognition, and query relevance.
+- domain_visible: Boolean. Would the target domain likely appear in top AI-generated answers for this query? Be conservative — most domains are NOT visible for most queries. Only mark true if the domain is a well-known market leader with strong brand authority directly relevant to the query. For niche, competitor-focused, or comparison queries (e.g. "best X", "X vs Y"), the target domain is usually NOT visible.
 - visibility_position: Integer 1-10 if domain_visible is true, null if false. Estimated position in AI answer (1=first mentioned).
 
 Output format (strictly this JSON schema):
